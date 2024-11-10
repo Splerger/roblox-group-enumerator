@@ -1,3 +1,4 @@
 config.py
 working_proxies.txt
 all_members.json
+__pycache__/
