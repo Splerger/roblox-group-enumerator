@@ -1,4 +1,5 @@
 config.py
-working_proxies.txt
-all_members.json
+*proxies.txt
+*_all_members.json
+suspicious_users_*.json
 __pycache__/
