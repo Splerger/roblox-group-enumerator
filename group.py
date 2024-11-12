@@ -69,7 +69,8 @@ def get_user_info(user_id):
         'bio': user_data.get('description', ''),
         'hasVerifiedBadge': user_data.get('hasVerifiedBadge', ''),
         'created': user_data.get('created', ''),
-        'isBanned': user_data.get('isBanned', '')
+        'isBanned': user_data.get('isBanned', ''),
+        'link': f"https://www.roblox.com/users/{user_data.get('id', '')}"
     }
 
 def process_group(group_id):
