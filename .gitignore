@@ -1,5 +1,6 @@
 config.py
 *proxies.txt
-*_all_members.json
-suspicious_users_*.json
+*.json
 __pycache__/
+all_links.txt
+group_ids.txt
