@@ -4,3 +4,7 @@ config.py
 __pycache__/
 all_links.txt
 group_ids.txt
+group/
+groups/
+.history/
+proxy*
