@@ -25,7 +25,7 @@ output_lock = Lock()
 
 
 def send_request(url, params=None, retries=5, backoff_factor=2):
-    delay = 1
+    delay = 2
     
     for attempt in range(1, retries + 1):
         try:
