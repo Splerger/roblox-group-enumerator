@@ -3,96 +3,81 @@ import os
 import unicodedata
 import re
 
-# Ensure necessary directories exist
+# Ensure output directory exists
 suspicious_dir = "suspicious_users"
-if not os.path.exists(suspicious_dir):
-    os.makedirs(suspicious_dir)
+os.makedirs(suspicious_dir, exist_ok=True)
 
 # Read group IDs
 with open('group_ids.txt', encoding="utf-8") as f:
     group_ids = [line.strip() for line in f if line.strip()]
 
-count = 0
+flagged_users = {}  # link => reason
+
 
 def normalize_text(text):
     """Normalize text for consistent emoji and diacritic handling."""
-    normalized_text = unicodedata.normalize('NFKD', text)
-    return ''.join(c for c in normalized_text if not unicodedata.combining(c))
+    if not isinstance(text, str):
+        return ""
+    normalized = unicodedata.normalize('NFKD', text)
+    return ''.join(c for c in normalized if not unicodedata.combining(c))
 
-flagged_users = {}  # Dictionary to store links with their reasons (ensures no duplicates)
-
-# Remove old suspicious users files if they exist
-for group_id in group_ids:
-    suspicious_file = os.path.join(suspicious_dir, f'suspicious_users_{group_id}.json')
-    if os.path.exists(suspicious_file):
-        os.remove(suspicious_file)
-        print(f"Removed existing file {suspicious_file}")
 
 def append_to_json_file(file_name, document):
-    """Write user data to the correct suspicious users JSON file."""
+    """Write user data to JSON, ensuring no duplicates."""
     file_path = os.path.join(suspicious_dir, file_name)
 
     try:
-        with open(file_path, 'r+', encoding='utf-8') as file:
-            try:
-                data = json.load(file)
-                if isinstance(data, list):
-                    data = {entry["id"]: entry for entry in data}  # Ensure uniqueness
-            except json.JSONDecodeError:
-                data = {}
-    except FileNotFoundError:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                data = {entry["id"]: entry for entry in data}
+    except (FileNotFoundError, json.JSONDecodeError):
         data = {}
 
-    user_id = document["id"]
-    data[user_id] = document  # Store only one entry per user
+    data[document["id"]] = document  # Overwrite or add
 
-    with open(file_path, 'w', encoding='utf-8') as file:
-        json.dump(list(data.values()), file, indent=4, ensure_ascii=False)
-        file.write('\n')
-    #print(f"Appended user {user_id} to {file_path}")
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(list(data.values()), f, indent=4, ensure_ascii=False)
+
 
 def search_bio_in_json(file_path, group_id, *search_terms):
-    """Search JSON file for suspicious keywords and save flagged users."""
-    global count
+    """Search for suspicious terms in JSON format where roles map to user lists."""
     normalized_terms = [normalize_text(term) for term in search_terms]
 
     try:
         with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: File not found: {file_path}")
-        return
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from: {file_path}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Error reading {file_path}")
         return
 
-    if not isinstance(data, list):  # Ensure data is a list of role dictionaries
-        print(f"Error: Expected a list of roles in {file_path}")
+    if not isinstance(data, dict):
+        print(f"Invalid JSON structure in {file_path}")
         return
 
-    print(f"Scanning {len(data)} user entries in {file_path}")
+    total_users = sum(len(users) for users in data.values() if isinstance(users, list))
+    print(f"Scanning {total_users} users in {file_path}")
 
-    for entry in data:
-        if not isinstance(entry, dict):
+    for role, users in data.items():
+        if not isinstance(users, list):
             continue
 
-        for role, user in entry.items():  # Extract user from role-based dictionary
+        for user in users:
             if not isinstance(user, dict):
                 continue
 
-            # Extract user information safely
-            user_id = user.get("id", "")
+            user_id = str(user.get("id", ""))
+            link = f"https://www.roblox.com/users/{user_id}/profile"
+
+            if link in flagged_users:
+                continue
+
             username = normalize_text(user.get("username", ""))
             display_name = normalize_text(user.get("displayName", ""))
             bio = normalize_text(user.get("bio", ""))
-            has_verified_badge = user.get("hasVerifiedBadge", False)
             created = user.get("created", "")
+            has_verified_badge = user.get("hasVerifiedBadge", False)
             is_banned = user.get("isBanned", False)
-            link = user.get("link", "")
-
-            # If user is already flagged, skip processing
-            if link in flagged_users:
-                continue  
 
             user_doc = {
                 "id": user_id,
@@ -103,54 +88,115 @@ def search_bio_in_json(file_path, group_id, *search_terms):
                 "created": created,
                 "isBanned": is_banned,
                 "link": link,
-                "role": role,  # Include the role for reference
+                "role": role,
                 "reason": ""
             }
 
+            full_text = f"{bio} {username} {display_name}".lower()
+
             for term in normalized_terms:
-                term_pattern = rf'\b{re.escape(term.lower())}\b'
+                pattern = rf'\b{re.escape(term.lower())}\b'
+                if re.search(pattern, full_text):
+                    user_doc["reason"] = f"matched: {term}"
+                    append_to_json_file(f"suspicious_users_{group_id}.json", user_doc)
+                    flagged_users[link] = user_doc["reason"]
+                    print(f"{link} - {term}")
+                    break
 
-                if re.search(term_pattern, bio.lower()):
-                    user_doc["reason"] = f"bio: {term}"
-                elif re.search(term_pattern, username.lower()):
-                    user_doc["reason"] = f"username: {term}"
-                elif re.search(term_pattern, display_name.lower()):
-                    user_doc["reason"] = f"display name: {term}"
-                else:
-                    continue  # If no match, skip appending
+    """Search for suspicious terms in bio, username, display name."""
+    normalized_terms = [normalize_text(term) for term in search_terms]
 
-                append_to_json_file(f"suspicious_users_{group_id}.json", user_doc)
-                print(f"{link} - {term}")
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(f"Error reading {file_path}")
+        return
 
-                # Save link with reason (ensures uniqueness)
-                flagged_users[link] = user_doc["reason"]
-                break  # Stop checking after the first match
+    if not isinstance(data, list):
+        print(f"Invalid JSON format in {file_path}")
+        return
+
+    print(f"Scanning {len(data)} entries in {file_path}")
+
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+
+        for role, user in entry.items():
+            if not isinstance(user, dict):
+                continue
+
+            user_id = user.get("id", "")
+            link = user.get("link", "")
+            if not link or link in flagged_users:
+                continue
+
+            username = normalize_text(user.get("username", ""))
+            display_name = normalize_text(user.get("displayName", ""))
+            bio = normalize_text(user.get("bio", ""))
+            created = user.get("created", "")
+            has_verified_badge = user.get("hasVerifiedBadge", False)
+            is_banned = user.get("isBanned", False)
+
+            user_doc = {
+                "id": user_id,
+                "username": username,
+                "display_name": display_name,
+                "bio": bio,
+                "hasVerifiedBadge": has_verified_badge,
+                "created": created,
+                "isBanned": is_banned,
+                "link": link,
+                "role": role,
+                "reason": ""
+            }
+
+            full_text = f"{bio} {username} {display_name}".lower()
+
+            for term in normalized_terms:
+                pattern = rf'\b{re.escape(term.lower())}\b'
+                if re.search(pattern, full_text):
+                    user_doc["reason"] = f"matched: {term}"
+                    append_to_json_file(f"suspicious_users_{group_id}.json", user_doc)
+                    flagged_users[link] = user_doc["reason"]
+                    print(f"{link} - {term}")
+                    break
+
+
+# Clean old files
+for group_id in group_ids:
+    suspicious_file = os.path.join(suspicious_dir, f'suspicious_users_{group_id}.json')
+    if os.path.exists(suspicious_file):
+        os.remove(suspicious_file)
+        print(f"Removed {suspicious_file}")
 
 # Process each group
 for group_id in group_ids:
-    file_path = os.path.join("groups", f"{group_id}_all_members.json")
-    print(f"Processing group {group_id} from {file_path}")
+    file_path = os.path.join("group", f"{group_id}_all_members.json")
+    print(f"Processing group {group_id}...")
 
     search_bio_in_json(
         file_path,
         group_id,
+        # Add suspicious terms here (include unicode directly or as u"\uXXXX\uXXXX")
         'sub', 'dom', 'fem', 'studio', 'rp', ':3', 'socials', 'trade', 'app',
         'blue app', 'blueapp', 'h%es', 'btm', 'top', 'switch', 'social', 'step bro',
         'step sis', 'tos', 'snow', 'buns', 'bunny', 'lvl', 'bull', 'pound',
-        'master', 'rper', 'bals', 'breed', 'yng', 'gorilla', 'cakedup', '\ud83d\uddcf',
-        '\ud83d\uddc0', '\ud83d\uddc5', 'dc', 'maid', 'disk', 'fem boi',
+        'master', 'rper', 'bals', 'breed', 'yng', 'gorilla', 'cakedup', '📏',
+        '🗀', '🗅', 'dc', 'maid', 'disk', 'fem boi',
         'https://www.roblox.com/users/', 'diaper', 'nappy', 'cons', 'femb', 'cake',
         'hairpull', 'mommy', 'daddy', 'literate', 'thug', 'clap', 'tyrone', 'inch',
-        'pedo', 'mdni', '\ud83d\udc02', 'remboys', 'latex', 'endowed', 'plow',
+        'pedo', 'mdni', '🐂', 'remboys', 'latex', 'endowed', 'plow',
         'stood', 'morph', 'grape', 'legal', 'blacked', 'own', 'huge', 'stiff',
-        'stwudioo', 'cd', 'limitless', 'experienced', 'roleplay', '\ud83d\udd00',
+        'stwudioo', 'cd', 'limitless', 'experienced', 'roleplay', '🔀',
         'teen', 'erp', 'eboni', 'aced', 'slyt', 'bounce', ';3', '>3', 'paws',
-        '\ud83d\udc3e', 'anthros', 'cubz', '=3'
+        '🐾', 'anthros', 'cubz', '=3', '🔵', 'twnk', 'x app', 'wfsn', 'toy', 'bll', 'bubblebt'
     )
 
-# Save all flagged links with reasons (without duplicates)
+# Write final list
 with open('all_links.txt', 'w', encoding='utf-8') as f:
     for link, reason in flagged_users.items():
         f.write(f"{link} - {reason}\n")
-        
-print("Finished writing all_links.txt with unique flagged links.")
+
+print("Done. Flagged links written to all_links.txt")

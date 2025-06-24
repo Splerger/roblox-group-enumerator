@@ -1,43 +1,43 @@
 import json
 import os
-import sys
 
-def convert_jsonl_to_json(input_file, output_file):
-    data = []
+def clean_jsonl(input_file, output_file):
+    valid_entries = []
+
     with open(input_file, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
             line = line.strip()
             if not line:
-                continue
+                continue  # Skip empty lines
+
             try:
-                item = json.loads(line)
-                data.append(item)
-            except json.JSONDecodeError as e:
-                print(f"Skipping invalid JSON line in {input_file}: {line}\nError: {e}")
-    
+                data = json.loads(line)
+
+                # Extract first (and only) key dynamically
+                if isinstance(data, dict) and len(data) == 1:
+                    first_key = next(iter(data))
+                    if isinstance(data[first_key], dict):  # Ensure value is a dictionary
+                        valid_entries.append(data[first_key])
+
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                print(f"Skipping malformed JSON line: {line[:100]}...")  # Show first 100 chars
+
+    # Save cleaned data to a new file
     with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-    print(f"Converted '{input_file}' to '{output_file}'.")
+        json.dump(valid_entries, f, indent=4, ensure_ascii=False)
 
-if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        print("Usage: python convert_all.py <input_directory> <output_directory>")
-        sys.exit(1)
-    
-    input_directory = sys.argv[1]
-    output_directory = sys.argv[2]
+    print(f"Cleaned JSONL saved to: {output_file}")
 
-    if not os.path.isdir(input_directory):
-        print(f"Error: {input_directory} is not a valid directory.")
-        sys.exit(1)
-    
-    # Create the output directory if it doesn't exist
-    os.makedirs(output_directory, exist_ok=True)
+# Process all .jsonl files in the "group" directory
+input_directory = "group"
+output_directory = "groups"
 
-    # Process each .jsonl file in the input directory
-    for filename in os.listdir(input_directory):
-        if filename.endswith('.jsonl'):
-            input_path = os.path.join(input_directory, filename)
-            output_filename = os.path.splitext(filename)[0] + '.json'
-            output_path = os.path.join(output_directory, output_filename)
-            convert_jsonl_to_json(input_path, output_path)
+if not os.path.exists(output_directory):
+    os.makedirs(output_directory)
+
+for filename in os.listdir(input_directory):
+    if filename.endswith(".jsonl"):
+        input_path = os.path.join(input_directory, filename)
+        output_path = os.path.join(output_directory, filename.replace(".jsonl", "_cleaned.json"))
+
+        clean_jsonl(input_path, output_path)

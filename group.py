@@ -3,7 +3,6 @@ import json
 from time import sleep
 from threading import Thread, Lock
 import os
-from config import roblox_cookie
 from pymongo import MongoClient
 from datetime import datetime, timedelta
 import random
@@ -24,40 +23,27 @@ headers = {
 
 output_lock = Lock()
 
-# List of proxies (use your actual list here)
-proxy_list = [
-    "socks5://109.169.243.104:7788",
-    "socks4://117.60.45.208:38801",
-    "socks5://43.155.169.227:15673",
-    "socks4://203.194.103.30:5678"
-    # Add more proxies as needed...
-]
 
 def send_request(url, params=None, retries=5, backoff_factor=2):
     delay = 1
-    proxy = random.choice(proxy_list)  # Select a random proxy from the list
     
-    # Ensure the proxy URL is complete and uses the proper scheme
-    proxy_url = proxy.strip()  # Ensure there are no extra spaces or newlines
-
-    # Set up the proxy configuration for HTTP or SOCKS
-    proxies = {
-        "http": proxy_url,
-        "https": proxy_url
-    }
-
     for attempt in range(1, retries + 1):
         try:
-            print(f"Attempt {attempt}: Requesting {url} using proxy {proxy_url}")
-            with httpx.Client(proxies=proxies) as client:
+            print(f"Attempt {attempt}: Requesting {url}")
+            with httpx.Client() as client:
                 response = client.get(url, headers=headers, params=params, timeout=20)
                 response.raise_for_status()
             return response.json()
         except (json.JSONDecodeError, httpx.HTTPStatusError, httpx.RequestError) as e:
             print(f"Attempt {attempt}: Error fetching {url} - {e}")
             if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
-                print("Rate limit exceeded. Waiting 60 seconds before retrying.")
-                sleep(60)
+                ratelimit_reset = int(response.headers.get('x-ratelimit-reset', 0)) - int(response.headers.get('x-ratelimit-remaining', 0))
+                print(f"Rate limit exceeded. Waiting {ratelimit_reset} seconds before retrying.")
+                if ratelimit_reset > 0:
+                    sleep(ratelimit_reset)
+                else:
+                    sleep(60)
+                continue
         sleep(delay)
         delay *= backoff_factor
     raise Exception(f"Failed to retrieve valid JSON from {url} after {retries} attempts.")
@@ -99,24 +85,41 @@ def get_user_info(user_id):
 def process_group(group_id):
     print(f"Fetching members for group ID: {group_id}")
     roles = get_group_roles(group_id)
-    group_file = os.path.join(folder_name, f'{group_id}_all_members.jsonl')
+    group_file = os.path.join(folder_name, f'{group_id}_all_members.json')
     
-    with open(group_file, 'w') as json_file:
-        for role in roles:
-            role_id = role['id']
-            role_name = role['name']
-            print(f"  Fetching users for role: {role_name}")
-            for user in get_users_by_role(group_id, role_id):
-                user_id = user['userId']
-                user_record = users_collection.find_one({'id': user_id})
-                if user_record and user_record['lastChecked'] > datetime.now() - timedelta(days=3):
-                    user_info = user_record
-                else:
-                    user_info = get_user_info(user_id)
-                    if user_info:
-                        users_collection.update_one({'id': user_id}, {'$set': user_info}, upsert=True)
+    data = {}
+    for role in roles:
+        role_id = role['id']
+        role_name = role['name']
+        print(f"  Fetching users for role: {role_name}")
+        data[role_name] = []
+        for user in get_users_by_role(group_id, role_id):
+            user_id = user['userId']
+            user_record = users_collection.find_one({'id': user_id})
+            if user_record and user_record['lastChecked'] > datetime.now() - timedelta(days=3):
+                user_info = user_record
+            else:
+                user_info = get_user_info(user_id)
                 if user_info:
-                    json_file.write(json.dumps({role_name: user_info}, default=str) + '\n')
+                    users_collection.update_one(
+                        {'id': user_id},
+                        {
+                            '$set': {
+                                'bio': user_info['bio'],
+                                'username': user_info['username'],
+                                'displayName': user_info['displayName'],
+                                'hasVerifiedBadge': user_info['hasVerifiedBadge'],
+                                'isBanned': user_info['isBanned'],
+                                'lastChecked': datetime.now()
+                            }
+                        },
+                        upsert=True
+                    )
+            if user_info:
+                data[role_name].append(user_info)
+
+    with open(group_file, 'w') as json_file:
+        json.dump(data, json_file, default=str, indent=4)
 
 if not os.path.exists(folder_name):
     os.makedirs(folder_name)
@@ -129,3 +132,4 @@ for thread in threads:
     thread.join()
 
 print(f"Data exported successfully")
+

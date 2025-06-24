@@ -7,4 +7,4 @@ group_ids.txt
 group/
 groups/
 .history/
-proxy*
+proxy_list.txt
